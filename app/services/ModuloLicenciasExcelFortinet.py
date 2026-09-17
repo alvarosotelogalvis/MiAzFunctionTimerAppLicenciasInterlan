@@ -10,6 +10,81 @@ __all__ = ["ValidarVencimLicenciasExcelPlatafFortinet"]
 def _extract_all_inputs(soup: BeautifulSoup) -> Dict[str, str]:
     return {i.get("name"): i.get("value", "") for i in soup.find_all("input") if i.get("name")}
 
+def _login_fortinet(config: Dict[str, Any], base_url: str, headers: Dict[str, str], final_url: str):
+    """
+    Ejecuta la secuencia completa de login + SSO contra el Partner Portal de Fortinet.
+    Devuelve (session, resp_final) si todo sale bien, o lanza una excepción (de red o
+    RuntimeError si no aparece algún elemento esperado en el HTML) si algún paso falla.
+    """
+    session = requests.Session()
+    # 1) GET inicial
+    resp0 = session.get(base_url, headers=headers, timeout=30)
+    soup0 = BeautifulSoup(resp0.text, "html.parser"); time.sleep(0.5)
+    # 2) Usuario
+    payload_user = _extract_all_inputs(soup0)
+    payload_user["__EVENTTARGET"] = "ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$LinkButton1"
+    payload_user["ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$UserName"] = config["USUARIO_PLAT_FORTI"]
+    resp_user = session.post(base_url, headers=headers, data=payload_user, timeout=30); time.sleep(0.5)
+    # 3) Password
+    soup1 = BeautifulSoup(resp_user.text, "html.parser")
+    payload_pass = _extract_all_inputs(soup1)
+    payload_pass["__EVENTTARGET"] = "ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$btnSubmit"
+    payload_pass["ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$Password"] = config["PASSW_PLAT_FORTI"]
+    resp_pass = session.post(base_url, headers=headers, data=payload_pass, timeout=30); time.sleep(0.5)
+    # 4) Renewal Assets → SSO
+    soup2 = BeautifulSoup(resp_pass.text, "html.parser")
+    renewal_link = soup2.find("a", string=lambda text: text and "Renewal Assets" in text); time.sleep(0.5)
+    if not (renewal_link and renewal_link.get("href")):
+        raise RuntimeError("No se encontró enlace 'Renewal Assets'.")
+    href = renewal_link["href"]
+    full_url = requests.compat.urljoin(base_url, href)
+    resp_renewal = session.get(full_url, headers=headers, timeout=30)
+    soup_sso = BeautifulSoup(resp_renewal.text, "html.parser")
+    form = soup_sso.find("form")
+    if not form:
+        raise RuntimeError("No se encontró el formulario SSO hacia soporte.")
+    action = form.get("action")
+    sso_url = requests.compat.urljoin(resp_renewal.url, action)
+    sso_payload = _extract_all_inputs(soup_sso)
+    _ = session.post(sso_url, headers=headers, data=sso_payload, allow_redirects=True, timeout=30)
+    # 5) Página final
+    resp_final = session.get(final_url, headers=headers, timeout=30)
+    soup_final = BeautifulSoup(resp_final.text, "html.parser")
+    if not soup_final.find("form", {"id": "aspnetForm"}):
+        raise RuntimeError("No se encontró el formulario final de soporte.")
+    return session, resp_final
+
+def _login_fortinet_con_reintentos(
+    config: Dict[str, Any],
+    base_url: str,
+    headers: Dict[str, str],
+    final_url: str,
+    max_intentos: int = 3,
+    esperas_seg: Optional[List[float]] = None,
+):
+    """
+    Reintenta la secuencia completa de login/SSO (no pasos sueltos, porque depende de
+    una sesión/cookies consistentes de punta a punta) ante errores transitorios de red
+    (DNS, timeout, conexión) o de contenido inesperado. Lanza el último error si se
+    agotan los intentos.
+
+    esperas_seg: espera (en segundos) antes de cada reintento — por defecto [20, 30]
+    (20s antes del 2do intento, 30s antes del 3ro). Si hay más intentos que esperas
+    definidas, se repite la última espera de la lista.
+    """
+    if esperas_seg is None:
+        esperas_seg = [20, 30]
+    ultimo_error: Optional[Exception] = None
+    for intento in range(1, max_intentos + 1):
+        try:
+            return _login_fortinet(config, base_url, headers, final_url)
+        except Exception as e:
+            ultimo_error = e
+            if intento < max_intentos:
+                idx = min(intento - 1, len(esperas_seg) - 1)
+                time.sleep(esperas_seg[idx])
+    raise ultimo_error
+
 def ValidarVencimLicenciasExcelPlatafFortinet(
     config: Dict[str, Any],
     lista_aplanada_fortinet: List[Dict[str, Any]],
@@ -54,44 +129,24 @@ def ValidarVencimLicenciasExcelPlatafFortinet(
     }
 
     try:
-        session = requests.Session()
-        # 1) GET inicial
-        resp0 = session.get(base_url, headers=headers, timeout=30)
-        soup0 = BeautifulSoup(resp0.text, "html.parser"); time.sleep(0.5)
-        # 2) Usuario
-        payload_user = _extract_all_inputs(soup0)
-        payload_user["__EVENTTARGET"] = "ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$LinkButton1"
-        payload_user["ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$UserName"] = config["USUARIO_PLAT_FORTI"]
-        resp_user = session.post(base_url, headers=headers, data=payload_user, timeout=30); time.sleep(0.5)
-        # 3) Password
-        soup1 = BeautifulSoup(resp_user.text, "html.parser")
-        payload_pass = _extract_all_inputs(soup1)
-        payload_pass["__EVENTTARGET"] = "ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$btnSubmit"
-        payload_pass["ctl00$ctl00$ctl00$GlobalBodyContent$ExternalBodyContent$BodyContent$LoginControl$Password"] = config["PASSW_PLAT_FORTI"]
-        resp_pass = session.post(base_url, headers=headers, data=payload_pass, timeout=30); time.sleep(0.5)
-        # 4) Renewal Assets → SSO
-        soup2 = BeautifulSoup(resp_pass.text, "html.parser")
-        renewal_link = soup2.find("a", string=lambda text: text and "Renewal Assets" in text); time.sleep(0.5)
-        if not (renewal_link and renewal_link.get("href")):
-            return False, "No se encontró enlace 'Renewal Assets'.", {"ListasLicenciasFortinetConsultadas": [], "ListasLicenciasFortinetNoConsultadas": []}
-        href = renewal_link["href"]
-        full_url = requests.compat.urljoin(base_url, href)
-        resp_renewal = session.get(full_url, headers=headers, timeout=30)
-        soup_sso = BeautifulSoup(resp_renewal.text, "html.parser")
-        form = soup_sso.find("form")
-        if not form:
-            return False, "No se encontró el formulario SSO hacia soporte.", {"ListasLicenciasFortinetConsultadas": [], "ListasLicenciasFortinetNoConsultadas": []}
-        action = form.get("action")
-        sso_url = requests.compat.urljoin(resp_renewal.url, action)
-        sso_payload = _extract_all_inputs(soup_sso)
-        _ = session.post(sso_url, headers=headers, data=sso_payload, allow_redirects=True, timeout=30)
-        # 5) Página final
-        resp_final = session.get(final_url, headers=headers, timeout=30)
-        soup_final = BeautifulSoup(resp_final.text, "html.parser")
-        if not soup_final.find("form", {"id": "aspnetForm"}):
-            return False, "No se encontró el formulario final de soporte.", {"ListasLicenciasFortinetConsultadas": [], "ListasLicenciasFortinetNoConsultadas": []}
+        session, resp_final = _login_fortinet_con_reintentos(config, base_url, headers, final_url, max_intentos=3)
     except Exception as e:
-        return False, f"Error durante login/SSO Fortinet: {e}", {"ListasLicenciasFortinetConsultadas": [], "ListasLicenciasFortinetNoConsultadas": []}
+        # Tras agotar los reintentos seguimos sin poder llegar a Fortinet (ej. un problema
+        # de red/DNS transitorio que no se resolvió a tiempo). En vez de abortar toda la
+        # pipeline de Excel, se degrada: se conservan las fechas que ya había en SharePoint
+        # para estas licencias (quedan como "no consultadas") y se avisa con
+        # "LoginFortinetFallido" para que function_app.py mande una alerta de advertencia
+        # (no de fallo total) y continúe el resto del proceso.
+        no_consultadas_por_fallo_login = [dict(row) for row in lista_aplanada_fortinet if isinstance(row, dict)]
+        return True, (
+            f"ADVERTENCIA: no se pudo iniciar sesión en Fortinet tras varios intentos, se omite "
+            f"la verificación real de vencimiento en esta corrida ({len(no_consultadas_por_fallo_login)} "
+            f"licencia(s) afectada(s)). Detalle: {e}"
+        ), {
+            "ListasLicenciasFortinetConsultadas": [],
+            "ListasLicenciasFortinetNoConsultadas": no_consultadas_por_fallo_login,
+            "LoginFortinetFallido": True,
+        }
 
     # ---- Consulta por fila ----
     for row in lista_aplanada_fortinet:

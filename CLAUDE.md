@@ -16,9 +16,13 @@ daily and drives two independent, sequential pipelines:
 Both pipelines: read the source → validate required fields → discard rows flagged "don't notify" →
 (Excel only) cross-check real expiration dates by scraping the Fortinet Partner Portal →
 compute which licenses are within the expiration window → resolve the responsible commercial's email →
-send expiration notification emails via Microsoft Graph `sendMail` → write results back to the source →
-send a run/log summary email. Both pipelines send that summary email through the same function,
-`EnviarCorreoSeguimientoLogsAzureFunction`.
+**classify** (not send) which licenses go to which recipient. Only after *both* pipelines finish
+classifying does a single shared tail run: one combined "send everything" step
+(`ModuloEnviarNotificacionesCombinadas.py`) merges both pipelines' classified data and sends each of
+the 3 notification email types (per-commercial, "sin destinatario", "seguimiento resumen") **once**
+per recipient per day — instead of once per pipeline, which is what happened before this was merged.
+After that, the Excel write-back runs, then a single combined run/log summary email
+(`EnviarCorreoSeguimientoLogsCombinado`) covering both pipelines' logs.
 
 ## Commands
 
@@ -45,12 +49,22 @@ via plain dicts/lists. **Every module follows the same contract**:
 - `data` is usually a dict of named buckets the caller unpacks and re-merges before the next step,
   e.g. `{"LicenciasNoDescartadas": [...], "LicenciasDescartadas": [...]}` or
   `{"ListasLicenciasFortinetConsultadas": [...], "ListasLicenciasFortinetNoConsultadas": [...]}`.
-- On `success is False`, `function_app.py` immediately returns a `func.HttpResponse` with status 500
-  and the message — there is no shared error-handling helper actually wired in (`ManejarErrorCritico`
-  exists at the top of the file but its call site is commented out).
+- On `success is False`, `function_app.py` calls a small closure (`checkpoint_excel` /
+  `checkpoint_lista` / `checkpoint_final`, built by `_hacer_checkpoint` near the top of
+  `timerAppLicenciasInterlan`) instead of just `logging.error(...)` — see "Failure alerts" below.
 
 When adding a step to either pipeline, match this shape rather than introducing a different return
 convention, since every downstream unpack in `function_app.py` assumes it.
+
+The two notification modules (`ModuloNotificacionVencimientosExcel.py` /
+`ModuloNotificacionVencimientos2.py`) are a partial exception to "one function per module": each
+exports a `Preparar*` function (`PrepararNotificacionesExcel` / `PrepararNotificacionesLista`) that
+only classifies license data into a "plan" dict — it does **not** send email or stamp
+`Notificaciones` itself anymore. The actual Graph `sendMail` calls and stamping live in
+`ModuloEnviarNotificacionesCombinadas.py::EnviarNotificacionesCombinadas`, which both pipelines feed
+into once they've both finished classifying (see "What this is" above). Token acquisition and the
+retrying `sendMail` call itself are shared via `ModuloGraphMailClient.py` (`ObtenerTokenGraph`,
+`EnviarCorreoGraph`, `DedupYEnvolver`) rather than duplicated per module.
 
 ### Generic modules parametrized by source
 
@@ -92,7 +106,9 @@ Env vars consumed:
 - `MAIL_SENDER` — mailbox used for every Graph `sendMail` call.
 - `MAIL_DESTINATARIOS` / `MAIL_SEGUIMIENTO` / `MAIL_SIN_DESTINATARIOS` — comma-separated recipient
   lists, parsed in `function_app.py` into a `DESTINATARIOS` dict and passed down to
-  `NotificarVencimientosExcel`, `NotificarVencimientosListas`, and `EnviarCorreoSeguimientoLogsAzureFunction`.
+  `EnviarNotificacionesCombinadas` and `EnviarCorreoSeguimientoLogsCombinado`.
+- `MAIL_ALERTAS_FALLO` — optional comma-separated recipient list for the failure-alert email (see
+  "Failure alerts" below). Falls back to `MAIL_SEGUIMIENTO` when unset, so it's not required.
 - `COMERCIALES_EMAILS_JSON` — a JSON string `{"usuarios":[{"id":<id>,"email":"..."}]}`, parsed into
   `COMERCIALES_EMAILS` and passed to `AsignarEmailComercialesLista` to resolve each licence's commercial
   email in the List pipeline.
@@ -107,11 +123,21 @@ look in `local.settings.json` (local) or Application Settings (Azure) instead.
 hold this recipient/commercial data on disk, with real emails committed to git — they were removed in
 favor of the env vars above. Don't recreate them; extend `MAIL_*` / `COMERCIALES_EMAILS_JSON` instead.
 
-### `EsProduccion` / dev vs prod branching
+### Failure alerts
 
-`CONFIG["ENTORNO"]` (`"desarrollo"` or `"produccion"`) is meant to control whether critical errors
-abort the timer run and email an alert (prod) or return an inspectable HTTP 500 body (dev), via
-`ManejarErrorCritico`. In the current code this helper is defined but not called anywhere in the
-pipeline — every step instead does its own inline `if not success: return func.HttpResponse(...)`,
-which only makes sense for the HTTP-trigger/dev testing path since a timer trigger has no caller to
-receive that response. Keep this in mind if a run appears to "fail silently" in production.
+Every one of the ~23 failure points across both pipelines (`if not success: ...`) calls a checkpoint
+closure instead of just logging: `checkpoint_excel`, `checkpoint_lista`, and `checkpoint_final` (for
+the 3 shared steps after both pipelines have classified — `EnviarNotificacionesCombinadas`,
+`ActualizarLicenciasExcelEnSharepoint`, `EnviarCorreoSeguimientoLogsCombinado`), each built once near
+the top of `timerAppLicenciasInterlan` by `_hacer_checkpoint(msglogs_list, pipeline_label)`. On
+failure, the checkpoint logs the error *and* sends a real alert email via
+`EnviarCorreoDeErrorPipeline` (`ModuloEnviarCorreoSeguimientoLogsAzureFunction.py`) naming which step
+failed, its message, and everything logged so far for that pipeline — then returns `False` so the
+call site's `if not checkpoint_x(...): return` still short-circuits the run exactly like before.
+
+This replaces an earlier `ManejarErrorCritico`/`EsProduccion` pair that looked like it did this but
+didn't: it was never called anywhere, and it called an `EnviarCorreoDeError` function that didn't
+exist in the codebase at all (would have raised `NameError` if it had ever been invoked). Both were
+deleted along with `CONFIG["ENTORNO"]`'s only real consumer — that key still exists (hardcoded
+`"desarrollo"`) and still needs to be flipped manually for a production deploy, but nothing branches
+on it for error handling anymore; every failure now emails the same way regardless of `ENTORNO`.

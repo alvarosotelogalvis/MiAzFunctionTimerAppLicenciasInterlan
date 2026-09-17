@@ -1,29 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-NotificarVencimientosListas (envíos + sello en campo Notificaciones + retorno de 3 listas)
+PrepararNotificacionesExcel (clasificación en ventanas + agrupación por comercial)
 -----------------------------------------------------------------------------------------
 
-- Envía UN solo correo a Seguimiento con el resumen completo (con email, sin destinatario y emails no válidos/inactivos).
-- Envía UN solo correo (consolidado) a SinDestinatarios (incluyendo sin destinatario e no válidos/inactivos).
-- Mantiene correos individuales a comerciales con email válido.
-- Sella el campo "Notificaciones" con 'dd-mm-yyyy-N-OK' (N=3,2,1) según días a vencer:
+Clasifica (sin enviar correo ni sellar "Notificaciones") las licencias del pipeline
+de Excel en ventanas de vencimiento v30/v60/v90, agrupadas por comercial y por
+categoría "sin destinatario". El envío real por Microsoft Graph y el sellado del
+campo "Notificaciones" ahora los hace EnviarNotificacionesCombinadas
+(ModuloEnviarNotificacionesCombinadas.py), una sola vez, después de que tanto esta
+pipeline como la de Listas hayan terminado de clasificar — así cada destinatario
+recibe un solo correo combinando ambas fuentes en vez de uno por pipeline.
+
+Sella el campo "Notificaciones" con 'dd-mm-yyyy-N-OK' (N=3,2,1) según días a vencer:
     N=1:  0 <= días < 30
     N=2: 30 <= días < 60
     N=3: 60 <= días <= 90
-- **Devuelve** las 3 listas (con los ítems mutados en memoria, ya sellados cuando corresponde).
-
-CONFIG opcional:
-  - SELLAR_CONSOLIDADO: bool = True
-  - CONTAR_VENCIDOS_COMO_N1: bool = False
-  - SUBJECT_PREFIX: str
-  - SENDER: str  (usuario/casilla que envía por Graph)
-
-Requiere:
-  - TENANT_ID, CLIENT_ID, CLIENT_SECRET (App Graph con permisos .default)
+(la función de sellado, SellarNotificacionesExcel, la invoca el módulo fusionador).
 """
 
-import requests
-import time
 from typing import Any, Dict, List, Tuple, Optional, Union
 from datetime import datetime, timezone, date
 import json
@@ -216,10 +210,13 @@ def _contenido_v3090(v30: List[Dict[str, Any]],
     contenido = "".join([seccion_30, seccion_60, seccion_90]).strip()
     return contenido if contenido else '<p><em>No se encontraron elementos para mostrar.</em></p>'
 
-def _html_body_multi(secciones: List[Dict[str, Any]],
-                     saludo: str = "Equipo Comercial",
-                     titulo_principal: str = "Notificación de Vencimiento de Licencias y/o Servicios",
-                     intro_html: Optional[str] = None) -> str:
+def ConstruirFragmentoSeccionesExcel(secciones: List[Dict[str, Any]]) -> str:
+    """
+    Construye el fragmento HTML (sin el envoltorio <html><head>) de una lista de
+    secciones {titulo, nota_html, v30, v60, v90}. Lo usa el módulo fusionador para
+    insertar las tablas de licencias de Excel dentro de un correo combinado junto
+    con las de la pipeline de Listas.
+    """
     bloques = []
     for sec in secciones:
         t = _esc(sec.get("titulo", ""))
@@ -237,123 +234,7 @@ def _html_body_multi(secciones: List[Dict[str, Any]],
 {nota_block}
 {contenido}
 """)
-
-    intro_block = ""
-    if intro_html:
-        intro_block = f"""
-<div style="background:#eef6ff;border:1px solid #b3d4ff;color:#1a4d8f;border-radius:6px;padding:10px 12px;margin:12px 0;">
-  {intro_html}
-</div>
-"""
-
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>{_esc(titulo_principal)}</title>
-<style>
-  body {{
-    font-family: Arial, Helvetica, sans-serif;
-    color: #333333;
-    line-height: 1.35;
-  }}
-  h1, h2 {{
-    color: #1a73e8;
-    font-weight: 600;
-    margin: 18px 0 6px 0;
-  }}
-  h3 {{
-    color: #444444;
-    margin: 14px 0 4px 0;
-    font-weight: 600;
-  }}
-  p {{ margin: 6px 0; }}
-  table {{
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 12px;
-  }}
-  th {{
-    background-color: #1a73e8;
-    color: #ffffff;
-    padding: 8px;
-    text-align: left;
-    font-size: 13px;
-    border: 1px solid #d0d7de;
-  }}
-  td {{
-    padding: 8px;
-    border-bottom: 1px solid #dddddd;
-    border-left: 1px solid #f0f0f0;
-    border-right: 1px solid #f0f0f0;
-    font-size: 13px;
-    vertical-align: top;
-  }}
-  .small {{ color: #666; font-size: 12px; }}
-</style>
-</head>
-<body>
-
-<p>Estimado(a) <strong>{_esc(saludo)}</strong>,</p>
-
-{intro_block}
-
-{''.join(bloques)}
-
-<p class="small">
-Este mensaje es informativo y forma parte del proceso de aseguramiento de continuidad operativa y seguridad.
-</p>
-
-<p>Atentamente,<br>
-<strong>Equipo comercial</strong><br>
-<strong>Interlan</strong><br>
-</p>
-
-</body>
-</html>"""
-
-def _html_body_info_simple(fecha_txt: str, titulo: str, mensaje: str) -> str:
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>{_esc(titulo)}</title>
-<style>
-  body {{
-    font-family: Arial, Helvetica, sans-serif;
-    color: #333333;
-    line-height: 1.35;
-  }}
-  h2 {{
-    color: #1a73e8;
-    font-weight: 600;
-  }}
-  p {{ margin: 6px 0; }}
-  .small {{ color: #666; font-size: 12px; }}
-</style>
-</head>
-<body>
-  <h2>{_esc(titulo)}</h2>
-  <p>Fecha de ejecución: <strong>{_esc(fecha_txt)}</strong></p>
-  <p>{_esc(mensaje)}</p>
-  <p class="small">Interlan – Calidad e Innovación</p>
-</body>
-</html>"""
-
-def _dedup_and_wrap(addresses: List[str]) -> List[Dict[str, Dict[str, str]]]:
-    env = []
-    vistos = set()
-    for a in addresses or []:
-        if not isinstance(a, str):
-            continue
-        low = a.strip().lower()
-        if not (low and EMAIL_REGEX.match(low)):
-            continue
-        if low in vistos:
-            continue
-        vistos.add(low)
-        env.append({"emailAddress": {"address": low}})
-    return env
+    return "".join(bloques)
 
 def _extract_email_from_item(it: Dict[str, Any], campos_email: Union[str, List[str], Tuple[str, ...]]) -> Optional[str]:
     if isinstance(campos_email, str):
@@ -367,46 +248,6 @@ def _extract_email_from_item(it: Dict[str, Any], campos_email: Union[str, List[s
             if em and EMAIL_REGEX.match(em):
                 return em
     return None
-
-def _send_graph_email(access_token: str, sender: str, subject: str, html: str,
-                      to_recipients: List[Dict[str, Dict[str, str]]],
-                      max_attempts: int = 3) -> Tuple[bool, str]:
-    if not to_recipients:
-        return False, "Sin destinatarios TO."
-    email_url = f"https://graph.microsoft.com/v1.0/users/{sender}/sendMail"
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    payload = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "HTML", "content": html},
-            "toRecipients": to_recipients
-        },
-        "saveToSentItems": True
-    }
-    for attempt in range(1, max_attempts + 1):
-        try:
-            resp = requests.post(email_url, headers=headers, json=payload, timeout=30)
-            status = resp.status_code
-            if status in (200, 202):
-                _log(f"[SEND OK] Subject='{subject}' To={[r['emailAddress']['address'] for r in to_recipients]}")
-                return True, ""
-            if status in (429, 500, 502, 503, 504):
-                _log(f"[SEND RETRY {attempt}] status={status} body={resp.text[:160]}")
-                time.sleep(min(30, 2 ** attempt))
-                continue
-            try:
-                detalle = resp.json()
-            except Exception:
-                detalle = resp.text
-            _log(f"[SEND ERR] status={status} body={str(detalle)[:500]}")
-            return False, f"[{status}] {str(detalle)[:300]}"
-        except Exception as ex:
-            if attempt == max_attempts:
-                _log(f"[SEND EXC] {ex}")
-                return False, f"[exception] {ex}"
-            _log(f"[SEND EXC RETRY {attempt}] {ex}")
-            time.sleep(min(30, 2 ** attempt))
-    return False, "Error desconocido al enviar correo."
 
 # --------------------- Helpers para campo Notificaciones ---------------------
 
@@ -502,134 +343,78 @@ def _sellar_en_lote(
         omit += 0 if ok else 1
     return upd, omit
 
-# --------------------- Función principal ---------------------
+def SellarNotificacionesExcel(
+    items: List[Dict[str, Any]],
+    hoy: date,
+    contar_negativos_como_n1: bool = False
+) -> Tuple[int, int]:
+    """Wrapper público sobre _sellar_en_lote, para que el módulo fusionador no
+    tenga que tocar internals con guion bajo de este módulo."""
+    return _sellar_en_lote(
+        items, hoy,
+        campo_vencimiento=CAMPO_VENCIMIENTO,
+        campo_notif=CAMPO_NOTIFICACIONES,
+        contar_negativos_como_n1=contar_negativos_como_n1
+    )
 
+# --------------------- Función principal (clasificación, sin enviar) ---------------------
 
-
-def NotificarVencimientosExcel(
-    CONFIG: Dict[str, Any],
+def PrepararNotificacionesExcel(
     CamposEmail: Union[str, List[str], Tuple[str, ...]],
     ListaNotificarLicenciasConEmail: Any,
     ListaNotificarLicenciasSinEmail: Any,
     ListaNotificarLincenciasComercialInactivos: Any,
     ListaLicenciasFechaNoValida: Any,
-    Destinatarios: Dict[str, Any]
 ) -> Tuple[bool, str, Dict[str, Any]]:
     """
-    Envía correos (por comercial y consolidados), sella el campo "Notificaciones" y
-    retorna las 3 listas con los ítems (mutados) para su persistencia posterior.
+    Clasifica las licencias del pipeline de Excel en ventanas de vencimiento
+    (v30/v60/v90), agrupadas por comercial y por categoría "sin destinatario".
+    No envía correo ni sella "Notificaciones" — eso lo hace, una sola vez para
+    ambas pipelines, EnviarNotificacionesCombinadas.
 
     Returns:
-      (success: bool, message: str, payload: dict)
-      payload = {
-        "ListaNotificarLicenciasConEmail": [...],
-        "ListaNotificarLicenciasSinEmail": [...],
-        "ListaNotificarLincenciasComercialInactivos": [...],
-        "Totales": { "enviados_ok": int, "fallidos": int, "sellos_comercial": int, "sellos_consolidado": int }
+      (success, message, plan)
+      plan = {
+        "por_comercial": {email_lower: {"items": [...], "clasif": {"v30":[],"v60":[],"v90":[]}}},
+        "secciones_sin_destinatario": [ {titulo, nota_html, v30, v60, v90}, ... ],
+        "secciones_seguimiento_base": [ {titulo, nota_html, v30, v60, v90}, ... ],
+        "raw_lists": {
+          "ConEmail": [...], "SinEmail": [...], "Inactivos": [...], "FechaNoValida": [...]
+        }
       }
     """
-
-    # 1) CONFIG + flags
-    TENANT_ID = str(CONFIG.get("TENANT_ID", "")).strip()
-    CLIENT_ID = str(CONFIG.get("CLIENT_ID", "")).strip()
-    CLIENT_SECRET = str(CONFIG.get("CLIENT_SECRET", "")).strip()
-    SUBJECT_PREFIX = str(CONFIG.get("SUBJECT_PREFIX", "")).strip()
-    SENDER = str(CONFIG.get("SENDER", ""))
-
-    SELLAR_CONSOLIDADO = bool(CONFIG.get("SELLAR_CONSOLIDADO", True))
-    CONTAR_VENCIDOS_COMO_N1 = bool(CONFIG.get("CONTAR_VENCIDOS_COMO_N1", False))
-
-    if not TENANT_ID or not CLIENT_ID or not CLIENT_SECRET:
-        return False, "CONFIG incompleto: faltan TENANT_ID, CLIENT_ID o CLIENT_SECRET.", {}
-
-    # 2) Token Graph
-    token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    token_data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "scope": "https://graph.microsoft.com/.default"
-    }
-    try:
-        token_resp = requests.post(token_url, data=token_data, timeout=30)
-    except Exception as ex:
-        return False, f"Error al solicitar token a Azure AD: {ex}", {}
-    if token_resp.status_code != 200:
-        try:
-            err = token_resp.json()
-        except Exception:
-            err = token_resp.text
-        return False, f"Error al obtener token ({token_resp.status_code}): {err}", {}
-    access_token = token_resp.json().get("access_token")
-    if not access_token:
-        return False, "No se recibió access_token en la respuesta de Azure AD.", {}
-
-    # 3) Normalizar entradas (listas mutables)
     ListaNotificarLicenciasConEmail = _ensure_list_of_dicts(ListaNotificarLicenciasConEmail, "ConEmail")
     ListaNotificarLicenciasSinEmail = _ensure_list_of_dicts(ListaNotificarLicenciasSinEmail, "SinEmail")
     ListaNotificarLincenciasComercialInactivos = _ensure_list_of_dicts(ListaNotificarLincenciasComercialInactivos, "Inactivos")
     ListaLicenciasFechaNoValida = _ensure_list_of_dicts(ListaLicenciasFechaNoValida, "FechaNoValida")
 
-    '''html_fechas_invalidas = ""
-    if ListaLicenciasFechaNoValida:
-        html_fechas_invalidas = _section_html_simple(
-            "Licencias con fecha de vencimiento ausente o no válida",
-            ListaLicenciasFechaNoValida
-        )'''
+    raw_lists = {
+        "ConEmail": ListaNotificarLicenciasConEmail,
+        "SinEmail": ListaNotificarLicenciasSinEmail,
+        "Inactivos": ListaNotificarLincenciasComercialInactivos,
+        "FechaNoValida": ListaLicenciasFechaNoValida,
+    }
 
     _log(f"[INFO] ConEmail={len(ListaNotificarLicenciasConEmail)} | SinEmail={len(ListaNotificarLicenciasSinEmail)} | Inactivos={len(ListaNotificarLincenciasComercialInactivos)}")
 
-    # 4) Destinatarios (vienen de variables de entorno, ver function_app.py)
-    list_destinatarios = [x for x in (Destinatarios.get("Destinatarios") or []) if isinstance(x, str)]
-    list_seguimiento = [x for x in (Destinatarios.get("Seguimiento") or []) if isinstance(x, str)]
-    list_sin_destinatarios = [x for x in (Destinatarios.get("SinDestinatarios") or []) if isinstance(x, str)]
+    if not (ListaNotificarLicenciasConEmail or ListaNotificarLicenciasSinEmail
+            or ListaNotificarLincenciasComercialInactivos or ListaLicenciasFechaNoValida):
+        plan = {
+            "por_comercial": {},
+            "secciones_sin_destinatario": [],
+            "secciones_seguimiento_base": [],
+            "raw_lists": raw_lists,
+        }
+        return True, "Sin licencias para notificar", plan
 
-    to_seg = _dedup_and_wrap(list_seguimiento)
-    if not to_seg:
-        return False, "No hay destinatarios en 'Seguimiento' (o no válidos). No se puede monitorear el proceso.", {}
-
-    hoy_txt = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     hoy_date = datetime.now(timezone.utc).date()
 
-    fallidos: List[str] = []
-    enviados_ok = 0
-    total_sellos_comercial = 0
-    total_sellos_consolidado = 0
-
-    # --- caso sin datos ---
-    if not (ListaNotificarLicenciasConEmail or ListaNotificarLicenciasSinEmail or ListaNotificarLincenciasComercialInactivos):
-        html_info = _html_body_info_simple(
-            hoy_txt,
-            "Seguimiento • Sin licencias para notificar",
-            "El proceso se ejecutó correctamente y no encontró licencias que notificar en esta ejecución."
-        )
-        ok, err = _send_graph_email(access_token, SENDER,
-                                    f"Seguimiento • Sin licencias para notificar • {hoy_txt}",
-                                    html_info, to_seg)
-        if not ok:
-            fallidos.append(f"Seguimiento(SinNada): {err}")
-        else:
-            enviados_ok += 1
-        # Retornar las 3 listas (vacías) igualmente
-        payload = {
-            "ListaNotificarLicenciasConEmail": ListaNotificarLicenciasConEmail,
-            "ListaNotificarLicenciasSinEmail": ListaNotificarLicenciasSinEmail,
-            "ListaNotificarLincenciasComercialInactivos": ListaNotificarLincenciasComercialInactivos,
-            "Totales": {
-                "enviados_ok": enviados_ok,
-                "fallidos": len(fallidos),
-                "sellos_comercial": total_sellos_comercial,
-                "sellos_consolidado": total_sellos_consolidado
-            }
-        }
-        return (False, "; ".join(fallidos)) if fallidos else (True, "Sin licencias para notificar"), payload
-
-    # --- clasificación auxiliar para consolidado ---
     clasif_sin = _clasificar_por_ventana(ListaNotificarLicenciasSinEmail, hoy_date) if ListaNotificarLicenciasSinEmail else {"v30": [], "v60": [], "v90": []}
     clasif_inv = _clasificar_por_ventana(ListaNotificarLincenciasComercialInactivos, hoy_date) if ListaNotificarLincenciasComercialInactivos else {"v30": [], "v60": [], "v90": []}
+    clasif_con_email = _clasificar_por_ventana(ListaNotificarLicenciasConEmail, hoy_date) if ListaNotificarLicenciasConEmail else {"v30": [], "v60": [], "v90": []}
 
-    # --- envíos por comercial y sellado ---
-    acumulado_con_email: List[Dict[str, Any]] = []
+    # --- agrupar por comercial ---
+    por_comercial: Dict[str, Dict[str, Any]] = {}
     if ListaNotificarLicenciasConEmail:
         grupos: Dict[str, List[Dict[str, Any]]] = {}
         for it in ListaNotificarLicenciasConEmail:
@@ -646,200 +431,63 @@ def NotificarVencimientosExcel(
             clasif_g = _clasificar_por_ventana(items, hoy_date)
             if not (clasif_g["v30"] or clasif_g["v60"] or clasif_g["v90"]):
                 continue
+            por_comercial[correo_lower] = {"items": items, "clasif": clasif_g}
 
-            html_g = _html_body_multi(
-                secciones=[{
-                    "titulo": "Licencias/Servicios próximos a vencer (asignadas)",
-                    "nota_html": None,
-                    "v30": clasif_g["v30"],
-                    "v60": clasif_g["v60"],
-                    "v90": clasif_g["v90"]
-                }],
-                saludo="Equipo Comercial",
-                titulo_principal="Próximos Vencimientos (Licencias, productos y/o servicios)",
-                intro_html="Se han identificado licencias/servicios próximos a vencer. Detalle por proximidad."
-            )
-
-            subject_core = f"Próximos Vencimientos (Licencias, productos y/o servicios) • {hoy_txt}"
-            subject = f"{SUBJECT_PREFIX} {subject_core}".strip() if SUBJECT_PREFIX else subject_core
-
-            to_list = _dedup_and_wrap([correo_lower] + list_destinatarios)
-            if not to_list:
-                fallidos.append(f"{correo_lower or '(sin correo válido)'} [sin destinatarios TO válidos]")
-                continue
-
-            ok, err = _send_graph_email(access_token, SENDER, subject, html_g, to_list)
-            if not ok:
-                fallidos.append(f"{correo_lower}: {err}")
-            else:
-                enviados_ok += 1
-                acumulado_con_email.extend(items)
-                upd, omit = _sellar_en_lote(
-                    items, hoy_date,
-                    campo_vencimiento=CAMPO_VENCIMIENTO,
-                    campo_notif=CAMPO_NOTIFICACIONES,
-                    contar_negativos_como_n1=CONTAR_VENCIDOS_COMO_N1
-                )
-                total_sellos_comercial += upd
-                _log(f"[STAMP Comerciales] {correo_lower}: actualizados={upd}, omitidos={omit}")
-
-    # --- consolidado SinDestinatarios + (opcional) sellado ---
-    secciones_sin_inv = []
+    # --- secciones para el correo consolidado "sin destinatario" ---
+    secciones_sin_destinatario = []
     if ListaNotificarLicenciasSinEmail:
-        secciones_sin_inv.append({
+        secciones_sin_destinatario.append({
             "titulo": "Vencimientos sin comercial asignado o no válido",
             "nota_html": "No tienen destinatario (email) o no hay comercial asignado.",
-            "v30": clasif_sin["v30"],
-            "v60": clasif_sin["v60"],
-            "v90": clasif_sin["v90"]
+            "v30": clasif_sin["v30"], "v60": clasif_sin["v60"], "v90": clasif_sin["v90"],
         })
     if ListaNotificarLincenciasComercialInactivos:
-        secciones_sin_inv.append({
+        secciones_sin_destinatario.append({
             "titulo": "Vencimientos con EmailComercial no válido/inactivo",
             "nota_html": "Destinatarios detectados inactivos o no válidos.",
-            "v30": clasif_inv["v30"],
-            "v60": clasif_inv["v60"],
-            "v90": clasif_inv["v90"]
+            "v30": clasif_inv["v30"], "v60": clasif_inv["v60"], "v90": clasif_inv["v90"],
         })
     if ListaLicenciasFechaNoValida:
-        secciones_sin_inv.append({
+        secciones_sin_destinatario.append({
             "titulo": "Licencias con fecha de vencimiento ausente o no válida",
             "nota_html": (
                 "Estas licencias no tienen una fecha válida y requieren corrección "
                 "antes de poder ser notificadas."
             ),
-            "v30": ListaLicenciasFechaNoValida,
-            "v60": [],
-            "v90": []
+            "v30": ListaLicenciasFechaNoValida, "v60": [], "v90": [],
         })
 
-
-    if secciones_sin_inv:
-        to_sin = _dedup_and_wrap(list_sin_destinatarios)
-        if to_sin:
-            html_sin_inv = _html_body_multi(
-                secciones=secciones_sin_inv,
-                saludo="Equipo Comercial (Asignación/Actualización requerida)",
-                titulo_principal="Vencimientos sin destinatario o con email no válido/inactivo",
-                intro_html="Se consolidan vencimientos que requieren asignación y/o actualización de contacto."
-            )
-            '''if html_fechas_invalidas:
-                html_sin_inv = html_sin_inv.replace(
-                    "</body>",
-                    f"{html_fechas_invalidas}</body>"
-                )'''
-            subject_sin = f"Vencimientos sin destinatario o con email no válido • {hoy_txt}"
-            subject_sin = f"{SUBJECT_PREFIX} {subject_sin}".strip() if SUBJECT_PREFIX else subject_sin
-
-            ok, err = _send_graph_email(access_token, SENDER, subject_sin, html_sin_inv, to_sin)
-            if not ok:
-                fallidos.append(f"SinDestinatarios(Consolidado): {err}")
-            else:
-                enviados_ok += 1
-                if SELLAR_CONSOLIDADO:
-                    todos_consolidados: List[Dict[str, Any]] = []
-                    for sec in secciones_sin_inv:
-                        todos_consolidados.extend(sec["v30"])
-                        todos_consolidados.extend(sec["v60"])
-                        todos_consolidados.extend(sec["v90"])
-                    upd, omit = _sellar_en_lote(
-                        todos_consolidados, hoy_date,
-                        campo_vencimiento=CAMPO_VENCIMIENTO,
-                        campo_notif=CAMPO_NOTIFICACIONES,
-                        contar_negativos_como_n1=CONTAR_VENCIDOS_COMO_N1
-                    )
-                    total_sellos_consolidado += upd
-                    _log(f"[STAMP Consolidados] actualizados={upd}, omitidos={omit}")
-        else:
-            _log("[WARN] No hay correos válidos en 'SinDestinatarios' para enviar consolidado.")
-
-    # --- Seguimiento consolidado ---
-    secciones_seg = []
-    if acumulado_con_email:
-        clasif_all = _clasificar_por_ventana(acumulado_con_email, hoy_date)
-        secciones_seg.append({
+    # --- secciones para el correo "Seguimiento • Resumen consolidado" ---
+    secciones_seguimiento_base = []
+    if ListaNotificarLicenciasConEmail:
+        secciones_seguimiento_base.append({
             "titulo": "Envíos a comerciales válidos",
-            "nota_html": "Se enviaron notificaciones a los comerciales con email válido.",
-            "v30": clasif_all["v30"],
-            "v60": clasif_all["v60"],
-            "v90": clasif_all["v90"]
+            "nota_html": "Licencias asignadas a comerciales con email válido.",
+            "v30": clasif_con_email["v30"], "v60": clasif_con_email["v60"], "v90": clasif_con_email["v90"],
         })
     if ListaNotificarLicenciasSinEmail:
-        secciones_seg.append({
+        secciones_seguimiento_base.append({
             "titulo": "Sin comercial asignado o no válido",
             "nota_html": "Pendiente asignación de comercial/destinatario.",
-            "v30": clasif_sin["v30"],
-            "v60": clasif_sin["v60"],
-            "v90": clasif_sin["v90"]
+            "v30": clasif_sin["v30"], "v60": clasif_sin["v60"], "v90": clasif_sin["v90"],
         })
     if ListaNotificarLincenciasComercialInactivos:
-        secciones_seg.append({
+        secciones_seguimiento_base.append({
             "titulo": "Comerciales no válidos/inactivos",
             "nota_html": "Pendiente actualización de información de contacto.",
-            "v30": clasif_inv["v30"],
-            "v60": clasif_inv["v60"],
-            "v90": clasif_inv["v90"]
+            "v30": clasif_inv["v30"], "v60": clasif_inv["v60"], "v90": clasif_inv["v90"],
         })
     if ListaLicenciasFechaNoValida:
-        secciones_seg.append({
+        secciones_seguimiento_base.append({
             "titulo": "Licencias con fecha de vencimiento ausente o no válida",
-            "nota_html": (
-                "Detectadas durante la validación. No fueron notificadas ni selladas."
-            ),
-            "v30": ListaLicenciasFechaNoValida,
-            "v60": [],
-            "v90": []
+            "nota_html": "Detectadas durante la validación. No fueron notificadas ni selladas.",
+            "v30": ListaLicenciasFechaNoValida, "v60": [], "v90": [],
         })
 
-
-    if secciones_seg:
-        html_seg = _html_body_multi(
-            secciones=secciones_seg,
-            saludo="Seguimiento",
-            titulo_principal="Seguimiento • Resumen consolidado de notificaciones",
-            intro_html="Resumen consolidado: envíos a comerciales válidos, sin destinatario y no válidos/inactivos."
-        )
-        '''if html_fechas_invalidas:
-            html_seg = html_seg.replace(
-                "</body>",
-                f"{html_fechas_invalidas}</body>"
-            )'''
-        subject_seg = f"Seguimiento • Resumen consolidado • {hoy_txt}"
-        subject_seg = f"{SUBJECT_PREFIX} {subject_seg}".strip() if SUBJECT_PREFIX else subject_seg
-        ok, err = _send_graph_email(access_token, SENDER, subject_seg, html_seg, to_seg)
-        if not ok:
-            fallidos.append(f"Seguimiento(Consolidado): {err}")
-        else:
-            enviados_ok += 1
-    else:
-        html_info = _html_body_info_simple(
-            hoy_txt,
-            "Seguimiento • Sin licencias para notificar",
-            "El proceso se ejecutó correctamente y no encontró licencias que notificar en esta ejecución."
-        )
-        ok, err = _send_graph_email(access_token, SENDER,
-                                    f"Seguimiento • Sin licencias para notificar • {hoy_txt}",
-                                    html_info, to_seg)
-        if not ok:
-            fallidos.append(f"Seguimiento(SinNada2): {err}")
-        else:
-            enviados_ok += 1
-
-    # --- Payload final: devolver 3 listas (mutadas/selladas) ---
-    payload = {
-        "ListaNotificarLicenciasConEmail": ListaNotificarLicenciasConEmail,
-        "ListaNotificarLicenciasSinEmail": ListaNotificarLicenciasSinEmail,
-        "ListaNotificarLincenciasComercialInactivos": ListaNotificarLincenciasComercialInactivos,
-        "ListaLicenciasFechaNoValida": ListaLicenciasFechaNoValida,
-        "Totales": {
-            "enviados_ok": enviados_ok,
-            "fallidos": len(fallidos),
-            "sellos_comercial": total_sellos_comercial,
-            "sellos_consolidado": total_sellos_consolidado
-        }
+    plan = {
+        "por_comercial": por_comercial,
+        "secciones_sin_destinatario": secciones_sin_destinatario,
+        "secciones_seguimiento_base": secciones_seguimiento_base,
+        "raw_lists": raw_lists,
     }
-
-    if fallidos:
-        return False, f"Correos OK: {enviados_ok}. Fallidos: {len(fallidos)}. Detalle: " + "; ".join(fallidos), payload
-    return True, f"Correos enviados OK: {enviados_ok}", payload
-    
+    return True, f"OK: {len(por_comercial)} comercial(es), {len(secciones_sin_destinatario)} sección(es) sin destinatario.", plan
