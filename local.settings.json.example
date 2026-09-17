@@ -1,0 +1,52 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "_comment_AzureWebJobsStorage": "Cadena de conexion de Azure Storage que usa el runtime de Azure Functions (triggers, locks internos). Vacio = usa Azurite/almacenamiento local.",
+    "AzureWebJobsStorage": "",
+
+    "_comment_FUNCTIONS_WORKER_RUNTIME": "Runtime del worker de Azure Functions. Debe ser 'python' para este proyecto.",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+
+    "_comment_RUN_ON_STARTUP": "Si es 'true', el timer trigger 'timerAppLicenciasInterlan' corre automaticamente al arrancar 'func start' (para pruebas locales), sin esperar el horario cron.",
+    "RUN_ON_STARTUP": "true",
+
+    "_comment_FORTINET_USER": "Usuario (correo) para iniciar sesion en el Portal de Partners de Fortinet, usado para consultar la fecha real de vencimiento de licencias Fortinet.",
+    "FORTINET_USER": "alvarosg@interlan.com.co",
+
+    "_comment_FORTINET_PASSWORD": "SECRETO. Password del usuario anterior en el Portal Fortinet. No compartir ni commitear con valor real.",
+    "FORTINET_PASSWORD": "change-me",
+
+    "_comment_APP1_TENANT_ID": "Tenant ID (GUID) de Microsoft Entra ID para la App Registration 'licencias' (App 1): lee/escribe el Excel y la lista de licencias en SharePoint via Microsoft Graph.",
+    "APP1_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+
+    "_comment_APP1_CLIENT_ID": "Client ID (Application ID) de la App Registration 'licencias' (App 1).",
+    "APP1_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
+
+    "_comment_APP1_CLIENT_SECRET": "SECRETO. Client secret de la App Registration 'licencias' (App 1). No compartir ni commitear con valor real.",
+    "APP1_CLIENT_SECRET": "change-me",
+
+    "_comment_APP2_TENANT_ID": "Tenant ID (GUID) de Microsoft Entra ID para la App Registration 'comerciales' (App 2): solo se usa para listar usuarios del tenant y resolver el email del asesor comercial.",
+    "APP2_TENANT_ID": "00000000-0000-0000-0000-000000000000",
+
+    "_comment_APP2_CLIENT_ID": "Client ID (Application ID) de la App Registration 'comerciales' (App 2).",
+    "APP2_CLIENT_ID": "00000000-0000-0000-0000-000000000000",
+
+    "_comment_APP2_CLIENT_SECRET": "SECRETO. Client secret de la App Registration 'comerciales' (App 2). No compartir ni commitear con valor real.",
+    "APP2_CLIENT_SECRET": "change-me",
+
+    "_comment_MAIL_SENDER": "Buzon de Microsoft 365 desde el que se envian TODAS las notificaciones via Graph sendMail (vencimientos de licencias y el correo de resumen/logs de la corrida).",
+    "MAIL_SENDER": "desarrollo1@interlan.com.co",
+
+    "_comment_MAIL_DESTINATARIOS": "Correos (separados por coma) que reciben el correo consolidado de licencias con comercial inactivo / sin email resuelto (antes 'Destinatarios' en DestinatariosConCopia.json).",
+    "MAIL_DESTINATARIOS": "desarrollo1@interlan.com.co",
+
+    "_comment_MAIL_SEGUIMIENTO": "Correos (separados por coma) que reciben el resumen de seguimiento de cada corrida de la Azure Function (log de eventos y notificaciones enviadas).",
+    "MAIL_SEGUIMIENTO": "desarrollo1@interlan.com.co",
+
+    "_comment_MAIL_SIN_DESTINATARIOS": "Correos (separados por coma) que reciben el correo consolidado de licencias que quedaron sin ningun destinatario/comercial valido asignado.",
+    "MAIL_SIN_DESTINATARIOS": "desarrollo1@interlan.com.co",
+
+    "_comment_COMERCIALES_EMAILS_JSON": "JSON (como string) con el mapeo {\"usuarios\":[{\"id\":<idComercial>,\"email\":\"...\"}]} que usa AsignarEmailComercialesLista para resolver el email del asesor comercial de cada licencia en la pipeline de Listas.",
+    "COMERCIALES_EMAILS_JSON": "{\"usuarios\":[{\"id\":0,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":40,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":43,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":54,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":55,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":62,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":64,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":65,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":71,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":145,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":150,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":154,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":158,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":225,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":372,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":507,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":527,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":541,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":548,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":576,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":749,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":1287,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":1863,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":2075,\"email\":\"desarrollo1@interlan.com.co\"},{\"id\":3097,\"email\":\"desarrollo1@interlan.com.co\"}]}"
+  }
+}
